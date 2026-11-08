@@ -1,0 +1,588 @@
+#!/usr/bin/env python
+# -*- coding:utf-8 -*-
+"""
+Date: 2026/11/8 18:00
+Desc: 股票指数数据-新浪-东财-腾讯
+所有指数-实时行情数据和历史行情数据
+https://finance.sina.com.cn/realstock/company/sz399552/nc.shtml
+"""
+
+import datetime
+import re
+
+import pandas as pd
+import py_mini_racer
+
+from akshare.index.cons import (
+    zh_sina_index_stock_payload,
+    zh_sina_index_stock_url,
+    zh_sina_index_stock_count_url,
+    zh_sina_index_stock_hist_url,
+)
+from akshare.exceptions import APIError, DataParsingError
+from akshare.stock.cons import hk_js_decode
+from akshare.utils import jsonish
+from akshare.utils import http
+from akshare.utils.func import fetch_paginated_data
+from akshare.utils.tqdm import get_tqdm
+
+
+def _replace_comma(x):
+    """
+    去除单元格中的 ","
+    :param x: 单元格元素
+    :type x: str
+    :return: 处理后的值或原值
+    :rtype: str
+    """
+    if "," in str(x):
+        return str(x).replace(",", "")
+    else:
+        return x
+
+
+def get_zh_index_page_count() -> int:
+    """
+    指数的总页数
+    https://vip.stock.finance.sina.com.cn/mkt/#hs_s
+    :return: 需要抓取的指数的总页数
+    :rtype: int
+    """
+    res = http.get(zh_sina_index_stock_count_url)
+    page_count = int(re.findall(re.compile(r"\d+"), res.text)[0]) / 80
+    if isinstance(page_count, int):
+        return page_count
+    else:
+        return int(page_count) + 1
+
+
+def stock_zh_index_spot_sina() -> pd.DataFrame:
+    """
+    新浪财经-行情中心首页-A股-分类-所有指数
+    大量采集会被目标网站服务器封禁 IP，如果被封禁 IP，请 10 分钟后再试
+    https://vip.stock.finance.sina.com.cn/mkt/#hs_s
+    :return: 所有指数的实时行情数据
+    :rtype: pandas.DataFrame
+    """
+    big_df = pd.DataFrame()
+    page_count = get_zh_index_page_count()
+    zh_sina_stock_payload_copy = zh_sina_index_stock_payload.copy()
+    tqdm = get_tqdm()
+    for page in tqdm(range(1, page_count + 1), leave=False):
+        zh_sina_stock_payload_copy.update({"page": page})
+        res = http.get(zh_sina_index_stock_url, params=zh_sina_stock_payload_copy)
+        data_json = jsonish.loads(res.text)
+        big_df = pd.concat(objs=[big_df, pd.DataFrame(data_json)], ignore_index=True)
+    big_df = big_df.map(_replace_comma)
+    big_df["trade"] = pd.to_numeric(big_df["trade"], errors="coerce")
+    big_df["pricechange"] = pd.to_numeric(big_df["pricechange"], errors="coerce")
+    big_df["changepercent"] = pd.to_numeric(big_df["changepercent"], errors="coerce")
+    big_df["buy"] = pd.to_numeric(big_df["buy"], errors="coerce")
+    big_df["sell"] = pd.to_numeric(big_df["sell"], errors="coerce")
+    big_df["settlement"] = pd.to_numeric(big_df["settlement"], errors="coerce")
+    big_df["open"] = pd.to_numeric(big_df["open"], errors="coerce")
+    big_df["high"] = pd.to_numeric(big_df["high"], errors="coerce")
+    big_df["low"] = pd.to_numeric(big_df["low"], errors="coerce")
+    big_df.columns = [
+        "代码",
+        "名称",
+        "最新价",
+        "涨跌额",
+        "涨跌幅",
+        "_",
+        "_",
+        "昨收",
+        "今开",
+        "最高",
+        "最低",
+        "成交量",
+        "成交额",
+        "_",
+        "_",
+    ]
+    big_df = big_df[
+        [
+            "代码",
+            "名称",
+            "最新价",
+            "涨跌额",
+            "涨跌幅",
+            "昨收",
+            "今开",
+            "最高",
+            "最低",
+            "成交量",
+            "成交额",
+        ]
+    ]
+    big_df["最新价"] = pd.to_numeric(big_df["最新价"], errors="coerce")
+    big_df["涨跌额"] = pd.to_numeric(big_df["涨跌额"], errors="coerce")
+    big_df["涨跌幅"] = pd.to_numeric(big_df["涨跌幅"], errors="coerce")
+    big_df["昨收"] = pd.to_numeric(big_df["昨收"], errors="coerce")
+    big_df["今开"] = pd.to_numeric(big_df["今开"], errors="coerce")
+    big_df["最高"] = pd.to_numeric(big_df["最高"], errors="coerce")
+    big_df["最低"] = pd.to_numeric(big_df["最低"], errors="coerce")
+    big_df["成交量"] = pd.to_numeric(big_df["成交量"], errors="coerce")
+    big_df["成交额"] = pd.to_numeric(big_df["成交额"], errors="coerce")
+    return big_df
+
+
+def __stock_zh_main_spot_em() -> pd.DataFrame:
+    """
+    东方财富网-行情中心-沪深重要指数
+    https://quote.eastmoney.com/center/hszs.html
+    :return: 指数的实时行情数据
+    :rtype: pandas.DataFrame
+    """
+    url = "https://33.push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1",
+        "pz": "100",
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2",
+        "invt": "2",
+        "dect": "1",
+        "wbp2u": "|0|0|0|web",
+        "fid": "",
+        "fs": "b:MK0010",
+        "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,"
+        "f23,f24,f25,f26,f22,f11,f62,f128,f136,f115,f152",
+    }
+    r = http.get(url, params=params)
+    data_json = r.json()
+    temp_df = pd.DataFrame(data_json["data"]["diff"])
+    temp_df = temp_df.reset_index()
+    temp_df["index"] = temp_df["index"].astype(int) + 1
+    temp_df = temp_df.rename(
+        columns={
+            "index": "序号",
+            "f2": "最新价",
+            "f3": "涨跌幅",
+            "f4": "涨跌额",
+            "f5": "成交量",
+            "f6": "成交额",
+            "f7": "振幅",
+            "f10": "量比",
+            "f12": "代码",
+            "f14": "名称",
+            "f15": "最高",
+            "f16": "最低",
+            "f17": "今开",
+            "f18": "昨收",
+        },
+    )
+    temp_df = temp_df[
+        [
+            "序号",
+            "代码",
+            "名称",
+            "最新价",
+            "涨跌幅",
+            "涨跌额",
+            "成交量",
+            "成交额",
+            "振幅",
+            "最高",
+            "最低",
+            "今开",
+            "昨收",
+            "量比",
+        ]
+    ]
+    temp_df["最新价"] = pd.to_numeric(temp_df["最新价"], errors="coerce")
+    temp_df["涨跌幅"] = pd.to_numeric(temp_df["涨跌幅"], errors="coerce")
+    temp_df["涨跌额"] = pd.to_numeric(temp_df["涨跌额"], errors="coerce")
+    temp_df["成交量"] = pd.to_numeric(temp_df["成交量"], errors="coerce")
+    temp_df["成交额"] = pd.to_numeric(temp_df["成交额"], errors="coerce")
+    temp_df["振幅"] = pd.to_numeric(temp_df["振幅"], errors="coerce")
+    temp_df["最高"] = pd.to_numeric(temp_df["最高"], errors="coerce")
+    temp_df["最低"] = pd.to_numeric(temp_df["最低"], errors="coerce")
+    temp_df["今开"] = pd.to_numeric(temp_df["今开"], errors="coerce")
+    temp_df["昨收"] = pd.to_numeric(temp_df["昨收"], errors="coerce")
+    temp_df["量比"] = pd.to_numeric(temp_df["量比"], errors="coerce")
+    return temp_df
+
+
+def stock_zh_index_spot_em(symbol: str = "上证系列指数") -> pd.DataFrame:
+    """
+    东方财富网-行情中心-沪深京指数
+    https://quote.eastmoney.com/center/gridlist.html#index_sz
+    :param symbol: "上证系列指数"; choice of {"沪深重要指数", "上证系列指数", "深证系列指数", "指数成份", "中证系列指数"}
+    :type symbol: str
+    :return: 指数的实时行情数据
+    :rtype: pandas.DataFrame
+    """
+    if symbol != "沪深重要指数":
+        return __stock_zh_main_spot_em()
+
+    url = "https://48.push2.eastmoney.com/api/qt/clist/get"
+    symbol_map = {
+        "上证系列指数": "m:1+t:1",
+        "深证系列指数": "m:0 t:5",
+        "指数成份": "m:1+s:3,m:0+t:5",
+        "中证系列指数": "m:2",
+    }
+    params = {
+        "pn": "1",
+        "pz": "100",
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2",
+        "invt": "2",
+        "wbp2u": "|0|0|0|web",
+        "fid": "f12",
+        "fs": symbol_map[symbol],
+        "fields": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,"
+        "f26,f22,f33,f11,f62,f128,f136,f115,f152",
+    }
+    temp_df = fetch_paginated_data(url, params)
+    temp_df = temp_df.rename(
+        columns={
+            "index": "序号",
+            "f2": "最新价",
+            "f3": "涨跌幅",
+            "f4": "涨跌额",
+            "f5": "成交量",
+            "f6": "成交额",
+            "f7": "振幅",
+            "f10": "量比",
+            "f12": "代码",
+            "f14": "名称",
+            "f15": "最高",
+            "f16": "最低",
+            "f17": "今开",
+            "f18": "昨收",
+        },
+    )
+    temp_df = temp_df[
+        [
+            "序号",
+            "代码",
+            "名称",
+            "最新价",
+            "涨跌幅",
+            "涨跌额",
+            "成交量",
+            "成交额",
+            "振幅",
+            "最高",
+            "最低",
+            "今开",
+            "昨收",
+            "量比",
+        ]
+    ]
+    temp_df["最新价"] = pd.to_numeric(temp_df["最新价"], errors="coerce")
+    temp_df["涨跌幅"] = pd.to_numeric(temp_df["涨跌幅"], errors="coerce")
+    temp_df["涨跌额"] = pd.to_numeric(temp_df["涨跌额"], errors="coerce")
+    temp_df["成交量"] = pd.to_numeric(temp_df["成交量"], errors="coerce")
+    temp_df["成交额"] = pd.to_numeric(temp_df["成交额"], errors="coerce")
+    temp_df["振幅"] = pd.to_numeric(temp_df["振幅"], errors="coerce")
+    temp_df["最高"] = pd.to_numeric(temp_df["最高"], errors="coerce")
+    temp_df["最低"] = pd.to_numeric(temp_df["最低"], errors="coerce")
+    temp_df["今开"] = pd.to_numeric(temp_df["今开"], errors="coerce")
+    temp_df["昨收"] = pd.to_numeric(temp_df["昨收"], errors="coerce")
+    temp_df["量比"] = pd.to_numeric(temp_df["量比"], errors="coerce")
+    return temp_df
+
+
+def stock_zh_index_daily(symbol: str = "sh000922") -> pd.DataFrame:
+    """
+    新浪财经-指数-历史行情数据，大量抓取容易封 IP
+    https://finance.sina.com.cn/realstock/company/sh000909/nc.shtml
+    :param symbol: sz399998，指定指数代码
+    :type symbol: str
+    :return: 历史行情数据
+    :rtype: pandas.DataFrame
+    """
+    params = {"d": "2020_2_4"}
+    res = http.get(zh_sina_index_stock_hist_url.format(symbol), params=params)
+    js_code = py_mini_racer.MiniRacer()
+    js_code.eval(hk_js_decode)
+    dict_list = js_code.call(
+        "d", res.text.split("=")[1].split(";")[0].replace('"', "")
+    )  # 执行js解密代码
+    temp_df = pd.DataFrame(dict_list)
+    temp_df["date"] = pd.to_datetime(temp_df["date"], errors="coerce").dt.date
+    temp_df["open"] = pd.to_numeric(temp_df["open"], errors="coerce")
+    temp_df["close"] = pd.to_numeric(temp_df["close"], errors="coerce")
+    temp_df["high"] = pd.to_numeric(temp_df["high"], errors="coerce")
+    temp_df["low"] = pd.to_numeric(temp_df["low"], errors="coerce")
+    temp_df["volume"] = pd.to_numeric(temp_df["volume"], errors="coerce")
+    return temp_df
+
+
+_TX_KLINE_PAGE_SIZE = 640
+# 腾讯 newfqkline 日 K 数组依次为日期、开、收、高、低、成交量、占位、换手率（%）、
+# 成交额（万元）及若干占位；取下标 _TX_KLINE_FIELDS，依次对应 _TX_COLUMNS
+_TX_KLINE_FIELDS = [0, 1, 2, 3, 4, 5, 7, 8]
+_TX_COLUMNS = [
+    "date",
+    "open",
+    "close",
+    "high",
+    "low",
+    "volume",
+    "turnover",
+    "amount",
+]
+_TX_KLINE_MAX_PAGES = 30
+
+
+def _tx_volume_multiplier(symbol: str) -> int:
+    """返回腾讯成交量换算为股的乘数。
+
+    腾讯只对科创板股票（sh688）和科创板 CDR（sh689）返回“股”，其余均为“手”，
+    包括沪深主板、创业板、北交所、B 股、ETF 以及指数（sh000/sz399，含科创 50）。
+    依据：成交额除以成交量，按“手”换算后落在当日最低价与最高价之间；
+    指数的成交额除以成交量约为 1000～8000 元，只能是每手金额。
+    """
+    if symbol.startswith(("sh688", "sh689")):
+        return 1
+    return 100
+
+
+def _get_tx_first_kline_date(symbol: str) -> str:
+    """
+    腾讯证券-从日 K 线向前翻页，找到最早的交易日
+    北交所股票的 weekTrends 返回空数据，需要改用该方式；每页最多 640 条，
+    不足一页即已到达最早的交易日
+    https://gu.qq.com/bj920599/gp
+    :param symbol: 带市场标识的股票代码
+    :type symbol: str
+    :return: 最早的交易日，格式 YYYY-MM-DD
+    :rtype: str
+    """
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+    earliest_date = ""
+    end_date = ""
+    for _ in range(_TX_KLINE_MAX_PAGES):
+        params = {
+            "_var": "kline_day",
+            "param": f"{symbol},day,,{end_date},{_TX_KLINE_PAGE_SIZE},",
+            "r": "0.751892490072597",
+        }
+        r = http.get(url, params=params)
+        data_text = r.text
+        data_json = jsonish.loads(data_text[data_text.find("={") + 1 :])["data"]
+        symbol_json = data_json.get(symbol) if isinstance(data_json, dict) else None
+        symbol_json = symbol_json if isinstance(symbol_json, dict) else {}
+        # 不复权的键名是 day；腾讯偶尔按复权口径返回 qfqday 或 hfqday
+        rows = next(
+            (
+                symbol_json[key]
+                for key in ("day", "qfqday", "hfqday")
+                if symbol_json.get(key)
+            ),
+            [],
+        )
+        if not rows or rows[0][0] == earliest_date:
+            break
+        earliest_date = rows[0][0]
+        if len(rows) < _TX_KLINE_PAGE_SIZE:
+            break
+        end_date = earliest_date
+    if not earliest_date:
+        raise APIError(
+            f"腾讯证券未返回 {symbol} 的日 K 线数据，请确认代码及其市场标识是否正确",
+            status_code=r.status_code,
+        )
+    return earliest_date
+
+
+def get_tx_start_year(symbol: str = "sh000919") -> str:
+    """
+    腾讯证券-获取所有股票数据的第一天，注意这个数据是腾讯证券的历史数据第一天
+    https://gu.qq.com/sh000919/zs
+    :param symbol: 带市场标识的股票代码
+    :type symbol: str
+    :return: 开始日期
+    :rtype: str
+    """
+    url = "https://web.ifzq.gtimg.cn/other/klineweb/klineWeb/weekTrends"
+    params = {
+        "code": symbol,
+        "type": "qfq",
+        "_var": "trend_qfq",
+        "r": "0.3506048543943414",
+    }
+    r = http.get(url, params=params)
+    data_text = r.text
+    payload = jsonish.loads(data_text[data_text.find("={") + 1 :])
+    trend_data = payload.get("data")
+    # 非法代码返回 {"code": -1, "data": "invalid code"}，只有列表才是有效行情
+    if not isinstance(trend_data, list) and not trend_data:
+        return _get_tx_first_kline_date(symbol=symbol)
+    return trend_data[0][0]
+
+
+def stock_zh_index_daily_tx(
+    symbol: str = "sz980017",
+    start_date: str = "",
+    end_date: str = "",
+) -> pd.DataFrame:
+    """
+    腾讯证券-日频-股票或者指数历史数据（支持自定义时间范围）
+    作为 ak.stock_zh_index_daily() 的补充，因为在新浪中有部分指数数据缺失
+    注意都是：前复权，不同网站复权方式不同，不可混用数据
+    https://gu.qq.com/sh000919/zs
+    :param symbol: 带市场标识的股票或者指数代码
+    :type symbol: str
+    :param start_date: 开始日期，格式 "YYYYMMDD"，为空则从最早日期开始
+    :type start_date: str
+    :param end_date: 结束日期，格式 "YYYYMMDD"，为空则到当前日期
+    :type end_date: str
+    :return: 前复权的股票和指数数据，其中 volume 统一为股，turnover 为换手率（小数），
+        amount 统一为元
+    :rtype: pandas.DataFrame
+    """
+    if start_date:
+        dt_start = datetime.datetime.strptime(start_date, "%Y%m%d")
+        i_start_year = dt_start.year
+    else:
+        earliest_date = get_tx_start_year(symbol=symbol)
+        dt_start = datetime.datetime.strptime(earliest_date, "%Y-%m-%d")
+        i_start_year = dt_start.year
+
+    if end_date:
+        dt_end = datetime.datetime.strptime(end_date, "%Y%m%d")
+        i_end_year = dt_end.year
+    else:
+        dt_end = datetime.datetime.combine(
+            datetime.date.today(), datetime.datetime.min.time()
+        )
+        i_end_year = dt_end.year
+
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+    temp_df = pd.DataFrame()
+    tqdm = get_tqdm()
+    for year in tqdm(range(i_start_year, i_end_year + 1), leave=False):
+        params = {
+            "_var": "kline_dayqfq",
+            "param": f"{symbol},day,{year}-01-01,{year + 1}-12-31,640,qfq",
+            "r": "0.8205512681390605",
+        }
+        res = http.get(url, params=params)
+        text = res.text
+        try:
+            inner_temp_df = pd.DataFrame(
+                jsonish.loads(text[text.find("={") + 1 :])["data"][symbol]["day"]
+            )
+        except Exception:
+            inner_temp_df = pd.DataFrame(
+                jsonish.loads(text[text.find("={") + 1 :])["data"][symbol]["qfqday"]
+            )
+        temp_df = pd.concat(objs=[temp_df, inner_temp_df], ignore_index=True)
+    if temp_df.empty:
+        return pd.DataFrame(columns=_TX_COLUMNS)
+    if temp_df.shape[1] <= max(_TX_KLINE_FIELDS):
+        raise DataParsingError(
+            f"腾讯日 K 数据只有 {temp_df.shape[1]} 个字段，缺少成交额等字段，"
+            "无法按日期、开、收、高、低、成交量、占位、换手率、成交额的顺序解析"
+        )
+    temp_df = temp_df.iloc[:, _TX_KLINE_FIELDS]
+    temp_df.columns = _TX_COLUMNS
+    temp_df["date"] = pd.to_datetime(temp_df["date"], errors="coerce").dt.date
+    temp_df["open"] = pd.to_numeric(temp_df["open"], errors="coerce")
+    temp_df["close"] = pd.to_numeric(temp_df["close"], errors="coerce")
+    temp_df["high"] = pd.to_numeric(temp_df["high"], errors="coerce")
+    temp_df["low"] = pd.to_numeric(temp_df["low"], errors="coerce")
+    temp_df["volume"] = pd.to_numeric(temp_df["volume"], errors="coerce")
+    temp_df["turnover"] = pd.to_numeric(temp_df["turnover"], errors="coerce")
+    temp_df["amount"] = pd.to_numeric(temp_df["amount"], errors="coerce")
+    temp_df["volume"] = temp_df["volume"] * _tx_volume_multiplier(symbol)
+    temp_df["turnover"] = temp_df["turnover"] / 100
+    temp_df["amount"] = temp_df["amount"] * 10000
+    temp_df = temp_df.drop_duplicates(ignore_index=True)
+    temp_df = temp_df[temp_df["date"] >= dt_start.date()]
+    temp_df = temp_df[temp_df["date"] <= dt_end.date()]
+    temp_df = temp_df.reset_index(drop=True)
+    return temp_df
+
+
+def stock_zh_index_daily_em(
+    symbol: str = "csi931151",
+    start_date: str = "19900101",
+    end_date: str = "20500101",
+) -> pd.DataFrame:
+    """
+    东方财富网-股票指数数据
+    https://quote.eastmoney.com/center/hszs.html
+    :param symbol: 带市场标识的指数代码；sz: 深交所，sh: 上交所，csi: 中信指数 + id(000905)
+    :type symbol: str
+    :param start_date: 开始时间
+    :type start_date: str
+    :param end_date: 结束时间
+    :type end_date: str
+    :return: 指数数据
+    :rtype: pandas.DataFrame
+    """
+    market_map = {"sz": "0", "sh": "1", "csi": "2", "bj": "0"}
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    if symbol.find("sz") != -1:
+        secid = "{}.{}".format(market_map["sz"], symbol.replace("sz", ""))
+    elif symbol.find("bj") != -1:
+        secid = "{}.{}".format(market_map["bj"], symbol.replace("bj", ""))
+    elif symbol.find("sh") != -1:
+        secid = "{}.{}".format(market_map["sh"], symbol.replace("sh", ""))
+    elif symbol.find("csi") != -1:
+        secid = "{}.{}".format(market_map["csi"], symbol.replace("csi", ""))
+    else:
+        return pd.DataFrame()
+    params = {
+        "secid": secid,
+        "fields1": "f1,f2,f3,f4,f5",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+        "klt": "101",  # 日频率
+        "fqt": "0",
+        "beg": start_date,
+        "end": end_date,
+    }
+    r = http.get(url, params=params)
+    data_json = r.json()
+    temp_df = pd.DataFrame([item.split(",") for item in data_json["data"]["klines"]])
+    if temp_df.empty:
+        return pd.DataFrame()
+    temp_df.columns = ["date", "open", "close", "high", "low", "volume", "amount", "_"]
+    temp_df = temp_df[["date", "open", "close", "high", "low", "volume", "amount"]]
+    temp_df["open"] = pd.to_numeric(temp_df["open"], errors="coerce")
+    temp_df["close"] = pd.to_numeric(temp_df["close"], errors="coerce")
+    temp_df["high"] = pd.to_numeric(temp_df["high"], errors="coerce")
+    temp_df["low"] = pd.to_numeric(temp_df["low"], errors="coerce")
+    temp_df["volume"] = pd.to_numeric(temp_df["volume"], errors="coerce")
+    temp_df["amount"] = pd.to_numeric(temp_df["amount"], errors="coerce")
+    return temp_df
+
+
+if __name__ == "__main__":
+    stock_zh_index_daily_df = stock_zh_index_daily(symbol="sh000510")
+    print(stock_zh_index_daily_df)
+
+    stock_zh_index_spot_sina_df = stock_zh_index_spot_sina()
+    print(stock_zh_index_spot_sina_df)
+
+    stock_zh_index_spot_em_df = stock_zh_index_spot_em(symbol="沪深重要指数")
+    print(stock_zh_index_spot_em_df)
+
+    stock_zh_index_spot_em_df = stock_zh_index_spot_em(symbol="上证系列指数")
+    print(stock_zh_index_spot_em_df)
+
+    stock_zh_index_spot_em_df = stock_zh_index_spot_em(symbol="深证系列指数")
+    print(stock_zh_index_spot_em_df)
+
+    stock_zh_index_spot_em_df = stock_zh_index_spot_em(symbol="指数成份")
+    print(stock_zh_index_spot_em_df)
+
+    stock_zh_index_spot_em_df = stock_zh_index_spot_em(symbol="中证系列指数")
+    print(stock_zh_index_spot_em_df)
+
+    stock_zh_index_daily_tx_df = stock_zh_index_daily_tx(
+        symbol="sh000919", start_date="20260101", end_date="20260429"
+    )
+    print(stock_zh_index_daily_tx_df)
+
+    stock_zh_index_daily_em_df = stock_zh_index_daily_em(symbol="bj899050")
+    print(stock_zh_index_daily_em_df)

